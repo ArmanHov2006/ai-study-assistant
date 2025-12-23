@@ -10,86 +10,71 @@ AI Study Assistant is a web API designed to provide intelligent study support th
 
 ## 🛠️ Tech Stack
 
-- **FastAPI** - Modern, fast web framework for building APIs with Python
-- **OpenAI** - AI integration for intelligent study assistance (planned)
-- **Uvicorn** - ASGI server for running FastAPI applications
-- **Python 3.13+** - Programming language
+- **FastAPI** - Python web framework
+- **Anthropic Claude API** - AI responses
+- **Python 3.8+** - Programming language
 
-## 🚀 Setup Instructions
+## 🚀 Setup
 
-### Prerequisites
+1. Clone the repo
+2. Install: `pip install -r requirements.txt`
+3. Create `.env` with `ANTHROPIC_API_KEY=your-key`
+4. Run: `uvicorn main:app --reload`
+5. Test: `curl -X POST http://localhost:8000/chat -H "Content-Type: application/json" -d '{"message": "Hello"}'`
 
-- Python 3.13 or higher
-- pip (Python package manager)
+**Access the API:**
 
-### Installation
-
-1. **Clone the repository** (if applicable) or navigate to the project directory:
-   ```bash
-   cd ai-study-assistant
-   ```
-
-2. **Create a virtual environment**:
-   ```bash
-   python -m venv venv
-   ```
-
-3. **Activate the virtual environment**:
-   
-   On Windows (PowerShell):
-   ```powershell
-   .\venv\Scripts\Activate.ps1
-   ```
-   
-   On Windows (Command Prompt):
-   ```cmd
-   venv\Scripts\activate.bat
-   ```
-   
-   On macOS/Linux:
-   ```bash
-   source venv/bin/activate
-   ```
-
-4. **Install dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-5. **Start the development server**:
-   ```bash
-   uvicorn main:app --reload
-   ```
-
-6. **Access the API**:
-   - API Base URL: `http://localhost:8000`
-   - Interactive API Documentation: `http://localhost:8000/docs`
-   - Alternative API Documentation: `http://localhost:8000/redoc`
+- API Base URL: `http://localhost:8000`
+- Interactive API Documentation: `http://localhost:8000/docs`
+- Alternative API Documentation: `http://localhost:8000/redoc`
 
 ## 📊 Current Status
 
-**Day 1 - Building the Foundation**
+### Features
 
-- ✅ Project structure initialized
-- ✅ FastAPI application setup
-- ✅ Basic API endpoints implemented
-- ✅ Development environment configured
-- 🔄 OpenAI integration (in progress)
-- 🔄 Core study assistant features (planned)
+- ✅ Echo endpoint (test)
+- ✅ Claude API integration
+- ✅ Chat endpoint (send message, get AI response)
 
 ## 📝 API Endpoints
 
-### Current Endpoints
+#### POST /chat
 
-- `GET /` - Welcome message and API information
-- `GET /echo?message=<text>` - Echo endpoint for testing
+Send a message and get Claude's response.
 
-### Planned Endpoints
+**Request:**
 
-- Study content analysis
-- Question answering
-- Note summarization
-- Study recommendations
+```json
+{
+  "message": "Your question here"
+}
+```
+
+**Response:**
+
+```json
+{
+  "response": "Claude's response here"
+}
+```
+
+#### GET /echo
+
+Echo endpoint for testing.
+
+**Request:**
+
+```
+GET /echo?message=your_message
+```
+
+**Response:**
+
+```json
+{
+  "echoed_message": "your_message"
+}
+```
 
 ## 🔧 Development
 
@@ -104,4 +89,3 @@ To stop the server, press `Ctrl+C` in the terminal.
 ---
 
 **Note:** This project is in early development. Features and documentation will be updated as development progresses.
-
