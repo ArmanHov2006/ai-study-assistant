@@ -11,7 +11,8 @@ AI Study Assistant is a web API designed to provide intelligent study support th
 ## 🛠️ Tech Stack
 
 - **FastAPI** - Python web framework
-- **Anthropic Claude API** - AI responses
+- **Anthropic Claude API** - AI responses (Claude Haiku)
+- **PyPDF2** - PDF text extraction
 - **Python 3.8+** - Programming language
 
 ## 🚀 Setup
@@ -35,6 +36,9 @@ AI Study Assistant is a web API designed to provide intelligent study support th
 - ✅ Echo endpoint (test)
 - ✅ Claude API integration
 - ✅ Chat endpoint (send message, get AI response)
+- ✅ Document upload (PDF and TXT files)
+- ✅ Document management (list, get, delete documents)
+- ✅ Comprehensive error handling
 
 ## 📝 API Endpoints
 
@@ -58,18 +62,76 @@ Send a message and get Claude's response.
 }
 ```
 
+#### POST /upload
+
+Upload a PDF or TXT file for processing.
+
+**Request:**
+```
+POST /upload
+Content-Type: multipart/form-data
+
+file: [your file]
+```
+
+**Response:**
+```json
+{
+  "message": "File uploaded successfully",
+  "filename": "document.pdf",
+  "file_type": "pdf",
+  "text_length": 1234,
+  "preview": "First 200 characters..."
+}
+```
+
+#### GET /documents
+
+List all uploaded documents.
+
+**Response:**
+```json
+{
+  "documents": [
+    {"filename": "doc1.pdf", "length": 1234},
+    {"filename": "doc2.txt", "length": 567}
+  ]
+}
+```
+
+#### GET /documents/{filename}
+
+Get a specific document's content.
+
+**Response:**
+```json
+{
+  "filename": "document.pdf",
+  "length": 1234
+}
+```
+
+#### DELETE /documents/{filename}
+
+Delete an uploaded document.
+
+**Response:**
+```json
+{
+  "message": "Document deleted successfully"
+}
+```
+
 #### GET /echo
 
 Echo endpoint for testing.
 
 **Request:**
-
 ```
 GET /echo?message=your_message
 ```
 
 **Response:**
-
 ```json
 {
   "echoed_message": "your_message"

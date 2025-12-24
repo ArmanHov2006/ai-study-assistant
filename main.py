@@ -1,5 +1,7 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from pydantic import BaseModel, field_validator
+from PyPDF2 import PdfReader
+import io
 import anthropic
 from anthropic import (
     APIError,
@@ -23,11 +25,13 @@ if not ANTHROPIC_API_KEY:
         "Get your API key from: https://console.anthropic.com/"
     )
 
-app = FastAPI(title="Echo API", version="1.0.0")
+app = FastAPI(title="AI Study Assistant", version="1.0.0")
 
 client = anthropic.Anthropic(
     api_key=ANTHROPIC_API_KEY
 )
+
+uploaded_documents = {}
 
 class ChatRequest(BaseModel):
     message: str
@@ -38,6 +42,63 @@ class ChatRequest(BaseModel):
         if not v or not v.strip():
             raise ValueError("Message cannot be empty or whitespace only")
         return v.strip()
+
+@app.get("/documents")
+async def get_all_documents():
+    return {
+        "documents": [
+            {"filename": name, "length": len(text)}
+            for name, text in uploaded_documents.items()
+        ]
+    }
+
+@app.get("/documents/{filename}")
+async def get_document(filename: str):
+    if filename not in uploaded_documents:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"filename": filename, "length": len(uploaded_documents[filename])}
+
+@app.delete("/documents/{filename}")
+async def delete_document(filename: str):
+    if filename not in uploaded_documents:
+        raise HTTPException(status_code=404, detail="Document not found")
+    del uploaded_documents[filename]
+    return {"message": "Document deleted successfully"}
+
+@app.post("/upload")
+async def upload_file(file: UploadFile = File(...)):
+    try:
+        content = await file.read()
+        if file.filename.endswith('.pdf'):
+            pdf_file = io.BytesIO(content)
+            reader = PdfReader(pdf_file)
+            text = ""
+            for page in reader.pages:
+                text += page.extract_text() or ""
+            file_type = "pdf"
+        elif file.filename.endswith('.txt'):
+            text = content.decode('utf-8')
+            file_type = "txt"
+        else:
+            raise HTTPException(status_code=400, detail="Only PDF and TXT files are supported")
+        uploaded_documents[file.filename] = text
+        return {
+            "message": "File uploaded successfully",
+            "filename": file.filename,
+            "file_type": file_type,
+            "text_length": len(text),
+            "preview": text[:200]
+        }
+    except UnicodeDecodeError:
+        raise HTTPException(
+            status_code=400,
+        detail="File encoding not supported. Use UTF-8 text files."
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing file: {str(e)}"
+        )
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
