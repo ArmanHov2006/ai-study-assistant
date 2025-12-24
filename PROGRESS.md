@@ -15,5 +15,8 @@
 ✅ Document upload feature (PDF and TXT)
 ✅ Document management endpoints (list, get, delete)
 ✅ PyPDF2 integration for PDF text extraction
+✅ **Document Q&A feature** - Ask questions about uploaded documents
+✅ Enhanced error handling (file validation, size limits, specific PDF errors)
+✅ Logging system implemented
 
 Next: Continue building study assistant features

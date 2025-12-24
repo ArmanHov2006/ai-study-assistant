@@ -38,33 +38,67 @@ AI Study Assistant is a web API designed to provide intelligent study support th
 - ✅ Chat endpoint (send message, get AI response)
 - ✅ Document upload (PDF and TXT files)
 - ✅ Document management (list, get, delete documents)
+- ✅ **Document Q&A** - Ask questions about uploaded documents
 - ✅ Comprehensive error handling
 
 ## 📝 API Endpoints
 
-#### POST /chat
+## 📚 Document Q&A Feature
 
-Send a message and get Claude's response.
+### How it works
+1. Upload a document (PDF or TXT) using `/upload`
+2. Ask questions about it using `/chat` with `document_name` parameter
+3. Claude answers based on your document content
+
+### Example Workflow
+
+**Step 1: Upload document**
+```bash
+curl -X POST http://localhost:8000/upload -F "file=@notes.pdf"
+```
+
+**Step 2: Ask question about document**
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "What are the main points?",
+    "document_name": "notes.pdf"
+  }'
+```
+
+**Step 3: Normal chat (no document)**
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Hello!"}'
+```
+
+### API Changes
+
+#### POST /chat (Updated)
+Now accepts optional `document_name` parameter for document-based questions.
 
 **Request:**
-
 ```json
 {
-  "message": "Your question here"
+  "message": "Your question",
+  "document_name": "optional_document.pdf"
 }
 ```
 
 **Response:**
-
 ```json
 {
-  "response": "Claude's response here"
+  "response": "Claude's answer based on document context"
 }
 ```
 
+**Note:** If `document_name` is provided but doesn't exist, you'll get a 404 error with available documents listed.
+
 #### POST /upload
 
-Upload a PDF or TXT file for processing.
+Upload a PDF or TXT file for processing. Uploaded documents can then be used in chat queries.
 
 **Request:**
 ```
@@ -83,6 +117,11 @@ file: [your file]
   "text_length": 1234,
   "preview": "First 200 characters..."
 }
+```
+
+**Example:**
+```bash
+curl -X POST http://localhost:8000/upload -F "file=@notes.pdf"
 ```
 
 #### GET /documents

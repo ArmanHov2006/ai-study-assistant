@@ -20,3 +20,8 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# Personal test files
+test_internship_query.py
+test_claude.py
+test.pdf

@@ -1,8 +1,11 @@
+from typing import Optional
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from pydantic import BaseModel, field_validator
 from PyPDF2 import PdfReader
+from PyPDF2.errors import PdfReadError
 import io
 import anthropic
+import logging
 from anthropic import (
     APIError,
     AuthenticationError,
@@ -27,14 +30,22 @@ if not ANTHROPIC_API_KEY:
 
 app = FastAPI(title="AI Study Assistant", version="1.0.0")
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 client = anthropic.Anthropic(
     api_key=ANTHROPIC_API_KEY
 )
 
 uploaded_documents = {}
 
+# Configuration constants
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB - prevents memory issues
+
 class ChatRequest(BaseModel):
     message: str
+    document_name: Optional[str] = None
     
     @field_validator('message')
     @classmethod
@@ -42,84 +53,40 @@ class ChatRequest(BaseModel):
         if not v or not v.strip():
             raise ValueError("Message cannot be empty or whitespace only")
         return v.strip()
-
-@app.get("/documents")
-async def get_all_documents():
-    return {
-        "documents": [
-            {"filename": name, "length": len(text)}
-            for name, text in uploaded_documents.items()
-        ]
-    }
-
-@app.get("/documents/{filename}")
-async def get_document(filename: str):
-    if filename not in uploaded_documents:
-        raise HTTPException(status_code=404, detail="Document not found")
-    return {"filename": filename, "length": len(uploaded_documents[filename])}
-
-@app.delete("/documents/{filename}")
-async def delete_document(filename: str):
-    if filename not in uploaded_documents:
-        raise HTTPException(status_code=404, detail="Document not found")
-    del uploaded_documents[filename]
-    return {"message": "Document deleted successfully"}
-
-@app.post("/upload")
-async def upload_file(file: UploadFile = File(...)):
-    try:
-        content = await file.read()
-        if file.filename.endswith('.pdf'):
-            pdf_file = io.BytesIO(content)
-            reader = PdfReader(pdf_file)
-            text = ""
-            for page in reader.pages:
-                text += page.extract_text() or ""
-            file_type = "pdf"
-        elif file.filename.endswith('.txt'):
-            text = content.decode('utf-8')
-            file_type = "txt"
-        else:
-            raise HTTPException(status_code=400, detail="Only PDF and TXT files are supported")
-        uploaded_documents[file.filename] = text
-        return {
-            "message": "File uploaded successfully",
-            "filename": file.filename,
-            "file_type": file_type,
-            "text_length": len(text),
-            "preview": text[:200]
-        }
-    except UnicodeDecodeError:
-        raise HTTPException(
-            status_code=400,
-        detail="File encoding not supported. Use UTF-8 text files."
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error processing file: {str(e)}"
-        )
+    
+    @field_validator('document_name')
+    @classmethod
+    def validate_document_name(cls, v: Optional[str]) -> Optional[str]:
+        # Only validate if document_name is provided (not None)
+        if v is not None:
+            v = v.strip()
+            if not v:
+                raise ValueError("Document name cannot be empty or whitespace only")
+        return v
 
 @app.post("/chat")
-async def chat(request: ChatRequest):
-    # Check API key before making request
-    if not ANTHROPIC_API_KEY:
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error": "ConfigurationError",
-                "message": "API key is not configured. Please check your .env file.",
-                "detail": "ANTHROPIC_API_KEY environment variable is missing"
-            }
-        )
+def chat(request: ChatRequest):
+    user_message = request.message
     
+    # Validate document exists if provided
+    if request.document_name:
+        if request.document_name not in uploaded_documents:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "DocumentNotFound",
+                    "message": f"Document '{request.document_name}' not found. Upload it first using /upload endpoint.",
+                    "detail": f"Available documents: {list(uploaded_documents.keys())}"
+                }
+            )
+        document_text = uploaded_documents[request.document_name]
+        user_message = f"Context: {document_text}\n\nUser: {user_message}\n\nAssistant:"
+
     try:
         message = client.messages.create(
             model="claude-3-5-haiku-20241022",
             max_tokens=4096,
-            messages=[
-                {"role": "user", "content": request.message}
-            ]
+            messages=[{"role": "user", "content": user_message}]
         )
         return {"response": message.content[0].text}
     
@@ -204,11 +171,132 @@ async def chat(request: ChatRequest):
             }
         )
 
+@app.get("/documents")
+async def get_all_documents():
+    return {
+        "documents": [
+            {"filename": name, "length": len(text)}
+            for name, text in uploaded_documents.items()
+        ]
+    }
+
+@app.get("/documents/{filename}")
+async def get_document(filename: str):
+    if filename not in uploaded_documents:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"filename": filename, "length": len(uploaded_documents[filename])}
+
+@app.delete("/documents/{filename}")
+async def delete_document(filename: str):
+    if filename not in uploaded_documents:
+        raise HTTPException(status_code=404, detail="Document not found")
+    del uploaded_documents[filename]
+    return {"message": "Document deleted successfully"}
+
+@app.post("/upload")
+async def upload_file(file: UploadFile = File(...)):
+    try:
+        content = await file.read()
+        
+        # Validate file is not empty
+        if len(content) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "EmptyFile",
+                    "message": "File is empty. Please upload a file with content."
+                }
+            )
+        
+        # Validate file size
+        if len(content) > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "FileTooLarge",
+                    "message": f"File too large. Maximum size is {MAX_FILE_SIZE / (1024*1024):.1f}MB",
+                    "detail": f"Your file size: {len(content) / (1024*1024):.2f}MB"
+                }
+            )
+        
+        # Validate file type and process
+        if not file.filename:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "InvalidFilename",
+                    "message": "File must have a filename"
+                }
+            )
+        
+        if file.filename.endswith('.pdf'):
+            try:
+                pdf_file = io.BytesIO(content)
+                reader = PdfReader(pdf_file)
+                text = ""
+                for page in reader.pages:
+                    text += page.extract_text() or ""
+                file_type = "pdf"
+            except PdfReadError as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "InvalidPDF",
+                        "message": "Invalid or corrupted PDF file",
+                        "detail": str(e)
+                    }
+                )
+        elif file.filename.endswith('.txt'):
+            try:
+                text = content.decode('utf-8')
+                file_type = "txt"
+            except UnicodeDecodeError:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "EncodingError",
+                        "message": "File encoding not supported. Use UTF-8 text files."
+                    }
+                )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "UnsupportedFileType",
+                    "message": "Only PDF and TXT files are supported",
+                    "detail": f"Received file type: {file.filename.split('.')[-1] if '.' in file.filename else 'unknown'}"
+                }
+            )
+        
+        uploaded_documents[file.filename] = text
+        logger.info(f"File uploaded successfully: {file.filename} ({len(text)} characters)")
+        
+        return {
+            "message": "File uploaded successfully",
+            "filename": file.filename,
+            "file_type": file_type,
+            "text_length": len(text),
+            "preview": text[:200]
+        }
+    except HTTPException:
+        # Re-raise HTTPExceptions (they're already properly formatted)
+        raise
+    except Exception as e:
+        # Log unexpected errors for debugging
+        logger.error(f"Unexpected error processing file {file.filename}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "ProcessingError",
+                "message": "An unexpected error occurred while processing the file",
+                "detail": str(e)
+            }
+        )
+
 @app.get("/")
 async def root():
     """Root endpoint that returns a welcome message."""
     return {"message": "Welcome to the Echo API", "endpoints": ["/echo"]}
-
 
 @app.get("/echo")
 async def echo(message: str):
