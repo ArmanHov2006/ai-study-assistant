@@ -12,5 +12,8 @@
 ✅ AI responding to messages
 ✅ Error handling added
 ✅ Documentation updated
+✅ Document upload feature (PDF and TXT)
+✅ Document management endpoints (list, get, delete)
+✅ PyPDF2 integration for PDF text extraction
 
 Next: Continue building study assistant features
