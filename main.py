@@ -39,6 +39,7 @@ client = anthropic.Anthropic(
 )
 
 uploaded_documents = {}
+conversations = {}
 
 # Configuration constants
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB - prevents memory issues
@@ -46,6 +47,7 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB - prevents memory issues
 class ChatRequest(BaseModel):
     message: str
     document_name: Optional[str] = None
+    session_id: Optional[str] = None
     
     @field_validator('message')
     @classmethod
@@ -64,32 +66,76 @@ class ChatRequest(BaseModel):
                 raise ValueError("Document name cannot be empty or whitespace only")
         return v
 
+    @field_validator('session_id')
+    @classmethod
+    def validate_session_id(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            v = v.strip()
+            if not v:
+                raise ValueError("Session ID cannot be empty")
+        return v
+
+
 @app.post("/chat")
 def chat(request: ChatRequest):
-    user_message = request.message
-    
-    # Validate document exists if provided
-    if request.document_name:
-        if request.document_name not in uploaded_documents:
-            raise HTTPException(
-                status_code=404,
-                detail={
-                    "error": "DocumentNotFound",
-                    "message": f"Document '{request.document_name}' not found. Upload it first using /upload endpoint.",
-                    "detail": f"Available documents: {list(uploaded_documents.keys())}"
-                }
-            )
-        document_text = uploaded_documents[request.document_name]
-        user_message = f"Context: {document_text}\n\nUser: {user_message}\n\nAssistant:"
-
     try:
-        message = client.messages.create(
+        # Get or create session
+        session_id = request.session_id or "default"
+        
+        if session_id not in conversations:
+            conversations[session_id] = []
+        
+        # Build user message (with document if specified)
+        user_message = request.message
+        
+        if request.document_name:
+            if request.document_name not in uploaded_documents:
+                raise HTTPException(
+                    status_code=404,
+                    detail={
+                        "error": "DocumentNotFound",
+                        "message": f"Document '{request.document_name}' not found.",
+                        "detail": f"Available: {list(uploaded_documents.keys())}"
+                    }
+                )
+            
+            document_text = uploaded_documents[request.document_name]
+            user_message = f"""Here is a document:
+
+<document>
+{document_text}
+</document>
+
+Based on this document, answer: {request.message}
+
+If not in document, say so."""
+        
+        # Build message history for Claude
+        # Copy existing history and add new message
+        message_history = conversations[session_id].copy()
+        message_history.append({"role": "user", "content": user_message})
+        
+        # Send to Claude with full conversation context
+        response = client.messages.create(
             model="claude-3-5-haiku-20241022",
             max_tokens=4096,
-            messages=[{"role": "user", "content": user_message}]
+            messages=message_history
         )
-        return {"response": message.content[0].text}
+        
+        assistant_message = response.content[0].text
+        
+        # Save conversation (both user and assistant messages)
+        conversations[session_id].append({"role": "user", "content": user_message})
+        conversations[session_id].append({"role": "assistant", "content": assistant_message})
+        
+        return {
+            "response": assistant_message,
+            "session_id": session_id,
+            "message_count": len(conversations[session_id])
+        }
     
+    except HTTPException:
+        raise
     except AuthenticationError as e:
         raise HTTPException(
             status_code=401,
@@ -99,7 +145,6 @@ def chat(request: ChatRequest):
                 "detail": str(e)
             }
         )
-    
     except RateLimitError as e:
         raise HTTPException(
             status_code=429,
@@ -109,7 +154,6 @@ def chat(request: ChatRequest):
                 "detail": str(e)
             }
         )
-    
     except APIConnectionError as e:
         raise HTTPException(
             status_code=503,
@@ -119,7 +163,6 @@ def chat(request: ChatRequest):
                 "detail": str(e)
             }
         )
-    
     except BadRequestError as e:
         raise HTTPException(
             status_code=400,
@@ -129,7 +172,6 @@ def chat(request: ChatRequest):
                 "detail": str(e)
             }
         )
-    
     except InternalServerError as e:
         raise HTTPException(
             status_code=503,
@@ -139,7 +181,6 @@ def chat(request: ChatRequest):
                 "detail": str(e)
             }
         )
-    
     except APIStatusError as e:
         status_code = e.status_code if hasattr(e, 'status_code') else 500
         raise HTTPException(
@@ -150,7 +191,6 @@ def chat(request: ChatRequest):
                 "detail": str(e)
             }
         )
-    
     except APIError as e:
         raise HTTPException(
             status_code=500,
@@ -160,8 +200,8 @@ def chat(request: ChatRequest):
                 "detail": str(e)
             }
         )
-    
     except Exception as e:
+        logger.error(f"Chat error: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={
@@ -292,6 +332,46 @@ async def upload_file(file: UploadFile = File(...)):
                 "detail": str(e)
             }
         )
+
+@app.get("/conversations/{session_id}")
+async def get_conversation(session_id: str):
+    """Get conversation history for a session."""
+    if session_id not in conversations:
+        raise HTTPException(
+            status_code=404,
+            detail="Session not found"
+        )
+    
+    return {
+        "session_id": session_id,
+        "message_count": len(conversations[session_id]),
+        "messages": conversations[session_id]
+    }
+
+@app.get("/conversations")
+async def list_conversations():
+    """List all active conversation sessions."""
+    return {
+        "sessions": [
+            {
+                "session_id": sid,
+                "message_count": len(messages)
+            }
+            for sid, messages in conversations.items()
+        ]
+    }
+
+@app.delete("/conversations/{session_id}")
+async def delete_conversation(session_id: str):
+    """Delete a conversation session."""
+    if session_id not in conversations:
+        raise HTTPException(
+            status_code=404,
+            detail="Session not found"
+        )
+    
+    del conversations[session_id]
+    return {"message": "Conversation deleted successfully"}
 
 @app.get("/")
 async def root():
