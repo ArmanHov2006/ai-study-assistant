@@ -43,6 +43,55 @@ conversations = {}
 
 # Configuration constants
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB - prevents memory issues
+CHUNK_SIZE = 1000
+CHUNK_OVERLAP = 200
+
+
+def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> list[str]:
+    if not text:   
+        return []
+    
+    if len(text) < chunk_size:
+        return [text]
+    
+    chunks = []
+    for i in range(0, len(text), chunk_size - overlap):
+        chunk = text[i:i + chunk_size]
+        if chunk:
+            chunks.append(chunk)
+    
+    return chunks
+
+
+def get_document_chunks(document_name: str) -> list[str]:
+    """
+    Get chunks from a document with backward compatibility.
+    """
+    doc = uploaded_documents[document_name]
+    if isinstance(doc, dict):
+        return doc["chunks"]
+    return [doc]
+
+def find_relevant_chunks(question: str, chunks: list[str], top_k: int = 3) -> list[str]:
+    if not chunks:
+        return []
+    
+    # Convert question to lowercase words
+    question_words = set(question.lower().split())
+    
+    # Score each chunk
+    scored_chunks = []
+    for chunk in chunks:
+        chunk_words = set(chunk.lower().split())
+        # Count how many question words appear in this chunk
+        score = len(question_words & chunk_words)
+        scored_chunks.append((score, chunk))
+    
+    # Sort by score (highest first)
+    scored_chunks.sort(reverse=True, key=lambda x: x[0])
+    
+    # Return top K chunks (or all if fewer than K)
+    return [chunk for _, chunk in scored_chunks[:top_k]]
 
 class ChatRequest(BaseModel):
     message: str
@@ -98,18 +147,21 @@ def chat(request: ChatRequest):
                         "detail": f"Available: {list(uploaded_documents.keys())}"
                     }
                 )
-            
-            document_text = uploaded_documents[request.document_name]
-            user_message = f"""Here is a document:
+            all_chunks = get_document_chunks(request.document_name)
+            relevant_chunks = find_relevant_chunks(request.message, all_chunks)
 
-<document>
-{document_text}
-</document>
+            # Fallback: If no relevant chunks found, use all chunks
+            if not relevant_chunks:
+                relevant_chunks = all_chunks
 
-Based on this document, answer: {request.message}
+            combined_text = "\n\n---\n\n".join(relevant_chunks)
+            user_message = f"""Here are sections from the document:
+{combined_text}
+
+Based on these sections, answer: {request.message}
 
 If not in document, say so."""
-        
+                    
         # Build message history for Claude
         # Copy existing history and add new message
         message_history = conversations[session_id].copy()
@@ -308,14 +360,35 @@ async def upload_file(file: UploadFile = File(...)):
                 }
             )
         
-        uploaded_documents[file.filename] = text
-        logger.info(f"File uploaded successfully: {file.filename} ({len(text)} characters)")
+        # TODO: After extracting text, chunk it and store in new structure
+        #
+        # WHAT TO DO:
+        # 1. Call chunk_text(text, CHUNK_SIZE, CHUNK_OVERLAP) to create chunks
+        # 2. Store in uploaded_documents with new structure:
+        #    uploaded_documents[file.filename] = {
+        #        "full_text": text,  # Keep original for reference
+        #        "chunks": chunks     # Store chunks for retrieval
+        #    }
+        # 3. Update return response to include "chunk_count": len(chunks)
+        #
+        # WHY THIS STRUCTURE?
+        # - Keeps original text for reference
+        # - Stores chunks for efficient retrieval
+        # - Maintains backward compatibility (old code can check type)
+        
+        chunks = chunk_text(text, CHUNK_SIZE, CHUNK_OVERLAP)
+        uploaded_documents[file.filename] = {
+            "full_text": text,  # Keep original for reference
+            "chunks": chunks    # Store chunks for retrieval
+        }
+        logger.info(f"File uploaded successfully: {file.filename} ({len(text)} characters, {len(chunks)} chunks)")
         
         return {
             "message": "File uploaded successfully",
             "filename": file.filename,
             "file_type": file_type,
             "text_length": len(text),
+            "chunk_count": len(chunks),
             "preview": text[:200]
         }
     except HTTPException:
@@ -372,6 +445,54 @@ async def delete_conversation(session_id: str):
     
     del conversations[session_id]
     return {"message": "Conversation deleted successfully"}
+
+@app.get("/debug/chunks/{filename}")
+async def debug_chunks(filename: str):
+    """
+    Debug endpoint to inspect chunking results.
+    
+    WHAT TO DO:
+    1. Check if filename exists in uploaded_documents
+       - If not found, return 404 error
+    2. Get the document (handle both dict and string formats):
+       - If dict: get chunk_count from len(doc["chunks"])
+       - If string: chunk_count = 1 (single chunk)
+    3. Get first chunk preview:
+       - If dict: first_chunk = doc["chunks"][0] if chunks exist
+       - If string: first_chunk = doc (the whole string)
+       - Preview = first 200 characters
+    4. Return JSON with:
+       - filename
+       - chunk_count
+       - first_chunk_preview (first 200 chars)
+       - total_length (full text length)
+    
+    PURPOSE:
+    - Allows testing and verification of chunking
+    - Helps debug chunking issues
+    - Useful for development and testing
+    """
+    if filename not in uploaded_documents:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    doc = uploaded_documents[filename]
+    chunks = get_document_chunks(filename)
+    chunk_count = len(chunks)
+    
+    # Handle both dict (new format) and string (old format)
+    if isinstance(doc, dict):
+        total_length = len(doc["full_text"])
+    else:
+        total_length = len(doc)
+    
+    first_chunk_preview = chunks[0][:200] if chunks else ""
+    
+    return {
+        "filename": filename,
+        "chunk_count": chunk_count,
+        "first_chunk_preview": first_chunk_preview,
+        "total_length": total_length
+    }
 
 @app.get("/")
 async def root():

@@ -18,5 +18,11 @@
 ✅ **Document Q&A feature** - Ask questions about uploaded documents
 ✅ Enhanced error handling (file validation, size limits, specific PDF errors)
 ✅ Logging system implemented
+✅ **Conversation memory** - Chatbot remembers previous messages in a session
+✅ **RAG (Retrieval-Augmented Generation) system** - Document chunking and smart retrieval
+✅ **Document chunking** - Documents split into manageable chunks with overlap
+✅ **Smart retrieval** - Only relevant chunks sent to Claude (efficient and cost-effective)
+✅ **Session management** - Multiple conversation sessions with isolation
+✅ **Debug endpoint** - Inspect chunking results for testing
 
 Next: Continue building study assistant features

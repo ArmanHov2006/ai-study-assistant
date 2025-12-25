@@ -6,7 +6,7 @@ An intelligent study assistant API powered by AI to help students with learning,
 
 AI Study Assistant is a web API designed to provide intelligent study support through AI-powered features. The project aims to assist students with various learning tasks, including content summarization, question answering, and personalized study recommendations.
 
-**Status:** 🚧 In Active Development (Day 1)
+**Status:** 🚧 In Active Development
 
 ## 🛠️ Tech Stack
 
@@ -36,19 +36,30 @@ AI Study Assistant is a web API designed to provide intelligent study support th
 - ✅ Echo endpoint (test)
 - ✅ Claude API integration
 - ✅ Chat endpoint (send message, get AI response)
+- ✅ **Conversation memory** - Remembers previous messages in a session
 - ✅ Document upload (PDF and TXT files)
 - ✅ Document management (list, get, delete documents)
-- ✅ **Document Q&A** - Ask questions about uploaded documents
+- ✅ **RAG System** - Document chunking and smart retrieval
+- ✅ **Document Q&A** - Ask questions about uploaded documents (with smart chunking)
+- ✅ **Session management** - Multiple isolated conversation sessions
 - ✅ Comprehensive error handling
 
 ## 📝 API Endpoints
 
-## 📚 Document Q&A Feature
+## 📚 Document Q&A Feature with RAG
 
 ### How it works
-1. Upload a document (PDF or TXT) using `/upload`
+1. Upload a document (PDF or TXT) using `/upload` - document is automatically chunked
 2. Ask questions about it using `/chat` with `document_name` parameter
-3. Claude answers based on your document content
+3. System retrieves only relevant chunks (smart retrieval)
+4. Claude answers based on relevant document sections
+
+### RAG (Retrieval-Augmented Generation)
+The system uses RAG to efficiently handle large documents:
+- **Chunking**: Documents are split into 1000-character chunks with 200-character overlap
+- **Smart Retrieval**: Only the 3 most relevant chunks are sent to Claude based on your question
+- **Efficiency**: Saves tokens, reduces costs, and improves response speed
+- **Accuracy**: Focuses on relevant content, improving answer quality
 
 ### Example Workflow
 
@@ -90,7 +101,9 @@ Now accepts optional `document_name` parameter for document-based questions.
 **Response:**
 ```json
 {
-  "response": "Claude's answer based on document context"
+  "response": "Claude's answer based on document context",
+  "session_id": "default",
+  "message_count": 2
 }
 ```
 
@@ -115,6 +128,7 @@ file: [your file]
   "filename": "document.pdf",
   "file_type": "pdf",
   "text_length": 1234,
+  "chunk_count": 5,
   "preview": "First 200 characters..."
 }
 ```
@@ -158,6 +172,76 @@ Delete an uploaded document.
 ```json
 {
   "message": "Document deleted successfully"
+}
+```
+
+#### GET /chat with Session ID
+
+Maintain conversation context across multiple messages.
+
+**Request:**
+```json
+{
+  "message": "What is DNA?",
+  "document_name": "biology.pdf",
+  "session_id": "my_session_123"
+}
+```
+
+**Response:**
+```json
+{
+  "response": "DNA is...",
+  "session_id": "my_session_123",
+  "message_count": 4
+}
+```
+
+#### GET /conversations
+
+List all active conversation sessions.
+
+**Response:**
+```json
+{
+  "sessions": [
+    {"session_id": "session1", "message_count": 6},
+    {"session_id": "session2", "message_count": 2}
+  ]
+}
+```
+
+#### GET /conversations/{session_id}
+
+Get conversation history for a specific session.
+
+**Response:**
+```json
+{
+  "session_id": "session1",
+  "message_count": 6,
+  "messages": [
+    {"role": "user", "content": "Hello"},
+    {"role": "assistant", "content": "Hi! How can I help?"}
+  ]
+}
+```
+
+#### DELETE /conversations/{session_id}
+
+Delete a conversation session.
+
+#### GET /debug/chunks/{filename}
+
+Debug endpoint to inspect chunking results.
+
+**Response:**
+```json
+{
+  "filename": "document.pdf",
+  "chunk_count": 5,
+  "first_chunk_preview": "First 200 characters of first chunk...",
+  "total_length": 5000
 }
 ```
 
