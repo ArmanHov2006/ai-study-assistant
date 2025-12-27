@@ -21,7 +21,6 @@ from scipy.spatial.distance import cosine
 import os
 from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
-from scipy.spatial.distance import cosine
 
 load_dotenv()
 
