@@ -15,8 +15,13 @@ from anthropic import (
     BadRequestError,
     InternalServerError,
 )
+import numpy as np
+import scipy
+from scipy.spatial.distance import cosine
 import os
 from dotenv import load_dotenv
+from sentence_transformers import SentenceTransformer
+from scipy.spatial.distance import cosine
 
 load_dotenv()
 
@@ -37,6 +42,7 @@ logger = logging.getLogger(__name__)
 client = anthropic.Anthropic(
     api_key=ANTHROPIC_API_KEY
 )
+embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 
 uploaded_documents = {}
 conversations = {}
@@ -63,6 +69,36 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> list[st
     return chunks
 
 
+def generate_embedding(text: str) -> np.ndarray:
+    if not text:
+        raise ValueError("Text cannot be empty")
+    return embedding_model.encode(text)
+
+def calculate_similarity(embedding1: np.ndarray, embedding2: np.ndarray) -> float:
+    return 1 - scipy.spatial.distance.cosine(embedding1, embedding2)
+
+def find_relevant_chunks_semantic(
+    question_embedding: np.ndarray,
+    chunk_embeddings: list[np.ndarray],
+    chunks: list[str],
+    top_k: int = 3
+) -> list[str]:
+    top_chunks = []
+    for chunk_embedding, chunk in zip(chunk_embeddings, chunks):
+        score = calculate_similarity(question_embedding, chunk_embedding)
+        top_chunks.append((score, chunk))
+
+    top_chunks.sort(reverse=True)
+    top_chunks = top_chunks[:top_k]
+
+    return [chunk for score, chunk in top_chunks]
+
+def get_document_embeddings(document_name: str) -> list[np.ndarray]:
+    doc = uploaded_documents[document_name]
+    if isinstance(doc, dict) and "embeddings" in doc:
+        return doc["embeddings"]
+    return []
+    
 def get_document_chunks(document_name: str) -> list[str]:
     """
     Get chunks from a document with backward compatibility.
@@ -148,11 +184,12 @@ def chat(request: ChatRequest):
                     }
                 )
             all_chunks = get_document_chunks(request.document_name)
-            relevant_chunks = find_relevant_chunks(request.message, all_chunks)
-
-            # Fallback: If no relevant chunks found, use all chunks
-            if not relevant_chunks:
-                relevant_chunks = all_chunks
+            all_embeddings = get_document_embeddings(request.document_name)
+            if len(all_embeddings) > 0:
+                question_embedding = generate_embedding(request.message)
+                relevant_chunks = find_relevant_chunks_semantic(question_embedding, all_embeddings, all_chunks)
+            else:
+                relevant_chunks = find_relevant_chunks(request.message, all_chunks)
 
             combined_text = "\n\n---\n\n".join(relevant_chunks)
             user_message = f"""Here are sections from the document:
@@ -359,27 +396,12 @@ async def upload_file(file: UploadFile = File(...)):
                     "detail": f"Received file type: {file.filename.split('.')[-1] if '.' in file.filename else 'unknown'}"
                 }
             )
-        
-        # TODO: After extracting text, chunk it and store in new structure
-        #
-        # WHAT TO DO:
-        # 1. Call chunk_text(text, CHUNK_SIZE, CHUNK_OVERLAP) to create chunks
-        # 2. Store in uploaded_documents with new structure:
-        #    uploaded_documents[file.filename] = {
-        #        "full_text": text,  # Keep original for reference
-        #        "chunks": chunks     # Store chunks for retrieval
-        #    }
-        # 3. Update return response to include "chunk_count": len(chunks)
-        #
-        # WHY THIS STRUCTURE?
-        # - Keeps original text for reference
-        # - Stores chunks for efficient retrieval
-        # - Maintains backward compatibility (old code can check type)
-        
         chunks = chunk_text(text, CHUNK_SIZE, CHUNK_OVERLAP)
+        embeddings = [generate_embedding(chunk) for chunk in chunks]
         uploaded_documents[file.filename] = {
             "full_text": text,  # Keep original for reference
-            "chunks": chunks    # Store chunks for retrieval
+            "chunks": chunks,
+            "embeddings": embeddings
         }
         logger.info(f"File uploaded successfully: {file.filename} ({len(text)} characters, {len(chunks)} chunks)")
         
@@ -389,8 +411,10 @@ async def upload_file(file: UploadFile = File(...)):
             "file_type": file_type,
             "text_length": len(text),
             "chunk_count": len(chunks),
-            "preview": text[:200]
+            "preview": text[:200],
+            "embedding_count": len(embeddings)
         }
+        
     except HTTPException:
         # Re-raise HTTPExceptions (they're already properly formatted)
         raise
@@ -487,9 +511,16 @@ async def debug_chunks(filename: str):
     
     first_chunk_preview = chunks[0][:200] if chunks else ""
     
+    # Get embeddings info
+    embeddings = get_document_embeddings(filename)
+    embedding_count = len(embeddings) if embeddings else 0
+    has_embeddings = isinstance(doc, dict) and "embeddings" in doc and len(embeddings) > 0
+    
     return {
         "filename": filename,
         "chunk_count": chunk_count,
+        "embedding_count": embedding_count,
+        "has_embeddings": has_embeddings,
         "first_chunk_preview": first_chunk_preview,
         "total_length": total_length
     }

@@ -24,5 +24,10 @@
 ✅ **Smart retrieval** - Only relevant chunks sent to Claude (efficient and cost-effective)
 ✅ **Session management** - Multiple conversation sessions with isolation
 ✅ **Debug endpoint** - Inspect chunking results for testing
+✅ **Semantic search with embeddings** - Replaced keyword matching with AI-powered semantic search
+✅ **Embedding generation** - Documents generate embeddings on upload using sentence-transformers
+✅ **Cosine similarity** - Uses scipy to calculate semantic similarity between embeddings
+✅ **Backward compatibility** - Old documents without embeddings still work with keyword search
+✅ **Enhanced debug endpoint** - Shows embedding count and status
 
 Next: Continue building study assistant features
