@@ -1,6 +1,10 @@
+import os
+# Disable tqdm progress bars BEFORE any imports to avoid Windows stderr issues
+os.environ['TQDM_DISABLE'] = '1'
+
 from typing import Optional
 from fastapi import FastAPI, HTTPException, UploadFile, File
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 from PyPDF2 import PdfReader
 from PyPDF2.errors import PdfReadError
 import io
@@ -18,7 +22,6 @@ from anthropic import (
 import numpy as np
 import scipy
 from scipy.spatial.distance import cosine
-import os
 from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
 
@@ -34,8 +37,14 @@ if not ANTHROPIC_API_KEY:
 
 app = FastAPI(title="AI Study Assistant", version="1.0.0")
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging with UTF-8 encoding for Windows
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 client = anthropic.Anthropic(
@@ -69,9 +78,22 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> list[st
 
 
 def generate_embedding(text: str) -> np.ndarray:
+    """Generate embedding for text, with Windows stderr workaround"""
     if not text:
         raise ValueError("Text cannot be empty")
-    return embedding_model.encode(text)
+    
+    # Windows console workaround - temporarily redirect stderr to suppress tqdm errors
+    import sys
+    old_stderr = sys.stderr
+    
+    try:
+        # Redirect stderr to devnull to avoid Windows console issues with tqdm
+        sys.stderr = open(os.devnull, 'w')
+        result = embedding_model.encode(text, show_progress_bar=False, convert_to_numpy=True)
+        return result
+    finally:
+        sys.stderr.close()
+        sys.stderr = old_stderr
 
 def calculate_similarity(embedding1: np.ndarray, embedding2: np.ndarray) -> float:
     return 1 - scipy.spatial.distance.cosine(embedding1, embedding2)
@@ -97,6 +119,38 @@ def get_document_embeddings(document_name: str) -> list[np.ndarray]:
     if isinstance(doc, dict) and "embeddings" in doc:
         return doc["embeddings"]
     return []
+
+def collect_all_document_data():
+    """
+    Collect all chunks, embeddings, and sources from all uploaded documents.
+    
+    Returns:
+        tuple: (all_chunks, all_embeddings, all_sources)
+    """
+    all_chunks = []
+    all_embeddings = []
+    all_sources = []
+    
+    # Edge case: Empty uploaded_documents
+    if not uploaded_documents:
+        return all_chunks, all_embeddings, all_sources
+    
+    # Iterate through all documents
+    for document_name in uploaded_documents.keys():
+        chunks = get_document_chunks(document_name)
+        embeddings = get_document_embeddings(document_name)
+        
+        # Add chunks, embeddings, and sources
+        for i, chunk in enumerate(chunks):
+            all_chunks.append(chunk)
+            all_sources.append(document_name)
+            # Add embedding if available, otherwise empty list element
+            if i < len(embeddings):
+                all_embeddings.append(embeddings[i])
+            else:
+                all_embeddings.append(None)
+    
+    return all_chunks, all_embeddings, all_sources
     
 def get_document_chunks(document_name: str) -> list[str]:
     """
@@ -131,6 +185,7 @@ def find_relevant_chunks(question: str, chunks: list[str], top_k: int = 3) -> li
 class ChatRequest(BaseModel):
     message: str
     document_name: Optional[str] = None
+    use_all_documents: Optional[bool] = False
     session_id: Optional[str] = None
     
     @field_validator('message')
@@ -158,6 +213,13 @@ class ChatRequest(BaseModel):
             if not v:
                 raise ValueError("Session ID cannot be empty")
         return v
+    
+    @model_validator(mode='after')
+    def validate_document_options(self):
+        """Validate that document_name and use_all_documents are not both set"""
+        if self.document_name and self.use_all_documents:
+            raise ValueError("Cannot specify both document_name and use_all_documents. Use one or the other.")
+        return self
 
 
 @app.post("/chat")
@@ -172,7 +234,12 @@ def chat(request: ChatRequest):
         # Build user message (with document if specified)
         user_message = request.message
         
+        # Initialize metadata tracking
+        documents_used = []
+        chunk_sources = []
+        
         if request.document_name:
+            # Single document mode
             if request.document_name not in uploaded_documents:
                 raise HTTPException(
                     status_code=404,
@@ -184,19 +251,133 @@ def chat(request: ChatRequest):
                 )
             all_chunks = get_document_chunks(request.document_name)
             all_embeddings = get_document_embeddings(request.document_name)
+            
+            # Edge case: Document has no chunks
+            if not all_chunks:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "EmptyDocument",
+                        "message": f"Document '{request.document_name}' has no chunks.",
+                    }
+                )
+            
             if len(all_embeddings) > 0:
                 question_embedding = generate_embedding(request.message)
                 relevant_chunks = find_relevant_chunks_semantic(question_embedding, all_embeddings, all_chunks)
             else:
                 relevant_chunks = find_relevant_chunks(request.message, all_chunks)
 
+            # Fallback: If no relevant chunks found, use all chunks
+            if not relevant_chunks:
+                relevant_chunks = all_chunks
+
+            # Track metadata for single document mode
+            documents_used = [request.document_name]
+            chunk_sources = [request.document_name] * len(relevant_chunks)
+
             combined_text = "\n\n---\n\n".join(relevant_chunks)
+            
+            # Edge case: Empty combined_text (shouldn't happen due to check above, but safety check)
+            if not combined_text:
+                combined_text = "No relevant content found in document."
+            
             user_message = f"""Here are sections from the document:
 {combined_text}
 
 Based on these sections, answer: {request.message}
 
 If not in document, say so."""
+                    
+        elif request.use_all_documents:
+            # All documents mode - collect all documents (with or without embeddings)
+            all_chunks, all_embeddings, all_sources = collect_all_document_data()
+            
+            # Collect chunks from ALL documents (not just those with embeddings)
+            if not uploaded_documents:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "NoDocuments",
+                        "message": "No documents uploaded. Please upload documents first.",
+                    }
+                )
+            
+            # Edge case: No chunks found in any document
+            if not all_chunks:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "NoChunks",
+                        "message": "No document chunks found. Documents may be empty.",
+                    }
+                )
+            
+            # Filter out None embeddings and track which chunks have embeddings
+            chunks_with_embeddings = []
+            embeddings_filtered = []
+            sources_with_embeddings = []
+            
+            for chunk, embedding, source in zip(all_chunks, all_embeddings, all_sources):
+                if embedding is not None:
+                    chunks_with_embeddings.append(chunk)
+                    embeddings_filtered.append(embedding)
+                    sources_with_embeddings.append(source)
+            
+            # Use semantic search if we have embeddings, otherwise keyword search
+            if len(embeddings_filtered) > 0:
+                question_embedding = generate_embedding(request.message)
+                relevant_chunks = find_relevant_chunks_semantic(question_embedding, embeddings_filtered, chunks_with_embeddings)
+                # Get sources for the relevant chunks
+                relevant_sources = []
+                for chunk in relevant_chunks:
+                    try:
+                        idx = chunks_with_embeddings.index(chunk)
+                        relevant_sources.append(sources_with_embeddings[idx])
+                    except ValueError:
+                        relevant_sources.append("unknown")
+            else:
+                # No embeddings available, use keyword search
+                relevant_chunks = find_relevant_chunks(request.message, all_chunks)
+                if not relevant_chunks:
+                    relevant_chunks = all_chunks[:10]  # Limit to first 10 chunks if no matches
+                
+                # Get sources for the relevant chunks by finding their indices
+                chunk_to_index = {}
+                for i, chunk in enumerate(all_chunks):
+                    if chunk not in chunk_to_index:
+                        chunk_to_index[chunk] = i
+                
+                relevant_sources = []
+                for chunk in relevant_chunks:
+                    idx = chunk_to_index.get(chunk, -1)
+                    if idx >= 0 and idx < len(all_sources):
+                        relevant_sources.append(all_sources[idx])
+                    else:
+                        relevant_sources.append("unknown")
+            
+            # Edge case: Ensure we have sources for all chunks
+            if len(relevant_sources) != len(relevant_chunks):
+                while len(relevant_sources) < len(relevant_chunks):
+                    relevant_sources.append("unknown")
+            
+            # Format chunks with sources
+            formatted_chunks = []
+            for chunk, source in zip(relevant_chunks, relevant_sources):
+                formatted_chunks.append(f"Source: {source}\n--------------------------------\n{chunk}")
+            
+            combined_text = "\n\n---\n\n".join(formatted_chunks)
+            
+            # Track metadata for all documents mode
+            chunk_sources = relevant_sources
+            documents_used = list(set(relevant_sources))  # Get unique document names
+            
+            user_message = f"""Here are sections from the documents:
+{combined_text}
+
+Based on these sections, answer: {request.message}
+
+If not in documents, say so."""
                     
         # Build message history for Claude
         # Copy existing history and add new message
@@ -219,7 +400,9 @@ If not in document, say so."""
         return {
             "response": assistant_message,
             "session_id": session_id,
-            "message_count": len(conversations[session_id])
+            "message_count": len(conversations[session_id]),
+            "documents_used": documents_used,
+            "chunk_sources": chunk_sources
         }
     
     except HTTPException:
@@ -289,7 +472,10 @@ If not in document, say so."""
             }
         )
     except Exception as e:
-        logger.error(f"Chat error: {str(e)}", exc_info=True)
+        try:
+            logger.error(f"Chat error: {str(e)}")
+        except:
+            pass  # Ignore logging errors on Windows
         raise HTTPException(
             status_code=500,
             detail={
@@ -402,7 +588,7 @@ async def upload_file(file: UploadFile = File(...)):
             "chunks": chunks,
             "embeddings": embeddings
         }
-        logger.info(f"File uploaded successfully: {file.filename} ({len(text)} characters, {len(chunks)} chunks)")
+        logger.info(f"File uploaded successfully: {file.filename}")
         
         return {
             "message": "File uploaded successfully",
@@ -419,13 +605,14 @@ async def upload_file(file: UploadFile = File(...)):
         raise
     except Exception as e:
         # Log unexpected errors for debugging
-        logger.error(f"Unexpected error processing file {file.filename}: {str(e)}", exc_info=True)
+        import traceback
+        error_trace = traceback.format_exc()
         raise HTTPException(
             status_code=500,
             detail={
                 "error": "ProcessingError",
                 "message": "An unexpected error occurred while processing the file",
-                "detail": str(e)
+                "detail": f"{str(e)}\n\n{error_trace}"
             }
         )
 
@@ -471,30 +658,8 @@ async def delete_conversation(session_id: str):
 
 @app.get("/debug/chunks/{filename}")
 async def debug_chunks(filename: str):
-    """
-    Debug endpoint to inspect chunking results.
+    # Debug endpoint to inspect chunking results.
     
-    WHAT TO DO:
-    1. Check if filename exists in uploaded_documents
-       - If not found, return 404 error
-    2. Get the document (handle both dict and string formats):
-       - If dict: get chunk_count from len(doc["chunks"])
-       - If string: chunk_count = 1 (single chunk)
-    3. Get first chunk preview:
-       - If dict: first_chunk = doc["chunks"][0] if chunks exist
-       - If string: first_chunk = doc (the whole string)
-       - Preview = first 200 characters
-    4. Return JSON with:
-       - filename
-       - chunk_count
-       - first_chunk_preview (first 200 chars)
-       - total_length (full text length)
-    
-    PURPOSE:
-    - Allows testing and verification of chunking
-    - Helps debug chunking issues
-    - Useful for development and testing
-    """
     if filename not in uploaded_documents:
         raise HTTPException(status_code=404, detail="Document not found")
     
