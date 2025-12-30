@@ -58,7 +58,7 @@ uploaded_documents = {}
 conversations = {}
 
 # Configuration constants
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB - prevents memory issues
+MAX_FILE_SIZE = 100 * 1024 * 1024   
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
 

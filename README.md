@@ -1,50 +1,147 @@
 # AI Study Assistant
 
-An intelligent study assistant API powered by AI to help students with learning, note-taking, and academic support.
+An intelligent study assistant powered by AI to help students with learning, note-taking, and academic support.
 
 ## 📋 Project Description
 
-AI Study Assistant is a web API designed to provide intelligent study support through AI-powered features. The project aims to assist students with various learning tasks, including content summarization, question answering, and personalized study recommendations.
+AI Study Assistant is a full-stack application designed to provide intelligent study support through AI-powered features. Upload your documents and leverage powerful tools including document Q&A, summarization, and interactive quiz generation.
 
-**Status:** 🚧 In Active Development
+**Status:** ✅ Fully Functional with Web UI
 
 ## 🛠️ Tech Stack
 
+**Backend:**
 - **FastAPI** - Python web framework
-- **Anthropic Claude API** - AI responses (Claude Haiku)
+- **Anthropic Claude API** - AI responses (Claude 3.5 Haiku)
 - **PyPDF2** - PDF text extraction
+- **SentenceTransformers** - Semantic embeddings for RAG
 - **Python 3.8+** - Programming language
 
-## 🚀 Setup
+**Frontend:**
+- **Streamlit** - Interactive web interface
+- **Multi-page app architecture** - Upload, Chat, Study Tools
 
-1. Clone the repo
-2. Install: `pip install -r requirements.txt`
-3. Create `.env` with `ANTHROPIC_API_KEY=your-key`
-4. Run: `uvicorn main:app --reload`
-5. Test: `curl -X POST http://localhost:8000/chat -H "Content-Type: application/json" -d '{"message": "Hello"}'`
+## 🚀 Quick Start
 
-**Access the API:**
+### Prerequisites
+- Python 3.8 or higher
+- Anthropic API key ([Get one here](https://console.anthropic.com/))
 
-- API Base URL: `http://localhost:8000`
-- Interactive API Documentation: `http://localhost:8000/docs`
-- Alternative API Documentation: `http://localhost:8000/redoc`
+### Installation
 
-## 📊 Current Status
+1. **Clone the repository**
+   ```bash
+   git clone <repository-url>
+   cd ai-study-assistant
+   ```
 
-### Features
+2. **Install dependencies**
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-- ✅ Echo endpoint (test)
-- ✅ Claude API integration
-- ✅ Chat endpoint (send message, get AI response)
-- ✅ **Conversation memory** - Remembers previous messages in a session
-- ✅ Document upload (PDF and TXT files)
-- ✅ Document management (list, get, delete documents)
-- ✅ **RAG System** - Document chunking and smart retrieval
-- ✅ **Document Q&A** - Ask questions about uploaded documents (with smart chunking)
-- ✅ **Session management** - Multiple isolated conversation sessions
-- ✅ Comprehensive error handling
+3. **Set up environment variables**
+   - Copy `.env.example` to `.env`
+   - Add your Anthropic API key:
+   ```
+   ANTHROPIC_API_KEY=your-api-key-here
+   ```
 
-## 📝 API Endpoints
+### Running the Application
+
+You need to run both the backend and frontend:
+
+**Terminal 1 - Start the Backend (FastAPI):**
+```bash
+uvicorn main:app --reload
+```
+The backend will run at `http://localhost:8000`
+
+**Terminal 2 - Start the Frontend (Streamlit):**
+```bash
+streamlit run app.py
+```
+The frontend will automatically open at `http://localhost:8501`
+
+### Access Points
+
+- **Streamlit Web UI**: `http://localhost:8501` ✨ (Recommended for most users)
+- **FastAPI Backend**: `http://localhost:8000`
+- **API Documentation**: `http://localhost:8000/docs`
+- **Alternative API Docs**: `http://localhost:8000/redoc`
+
+## 📊 Features
+
+### 📤 Document Upload & Management
+- Upload PDF and TXT files (max 10MB)
+- View all uploaded documents
+- Delete documents from your library
+- Automatic text extraction and processing
+
+### 💬 Intelligent Chat
+- **Three modes:**
+  - Single Document - Focus on one document
+  - All Documents - Query your entire library
+  - General Chat - Conversation without document context
+- Session management - Organize conversations by topic
+- Full conversation history
+- Source citations - See which documents were used
+
+### 📚 Study Tools
+
+**Summarize:**
+- Generate comprehensive summaries
+- Structured output with key points
+- Compression metrics
+
+**Quiz:**
+- Interactive quiz generation
+- Mixed question types (multiple choice + short answer)
+- Three difficulty levels (easy, medium, hard)
+- 5-40 questions per quiz
+- Instant grading with explanations
+- Support for single or all documents
+
+### 🤖 AI-Powered Backend
+- RAG (Retrieval-Augmented Generation) system
+- Semantic search with embeddings
+- Document chunking for efficient processing
+- Claude 3.5 Haiku integration
+- Comprehensive error handling
+
+## 🎨 Streamlit Frontend
+
+The Streamlit frontend provides an intuitive web interface with three main pages:
+
+### 1. 📤 Upload Page
+- Drag-and-drop file upload
+- Document library with delete functionality
+- Upload progress and feedback
+- File validation
+
+### 2. 💬 Chat Page
+- Clean chat interface
+- Sidebar controls for:
+  - Session selection and management
+  - Document mode selection
+  - Document picker
+- Real-time AI responses
+- Source attribution
+
+### 3. 📚 Study Tools Page
+
+**Summarize Tab:**
+- Document selector
+- One-click summary generation
+- Formatted output with metrics
+
+**Quiz Tab:**
+- Configurable quiz parameters
+- Interactive question interface
+- Submit and grade functionality
+- Detailed feedback with explanations
+
+## 📝 API Endpoints (Backend)
 
 ## 📚 Document Q&A Feature with RAG
 
