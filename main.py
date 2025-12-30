@@ -1,7 +1,7 @@
 import os
 # Disable tqdm progress bars BEFORE any imports to avoid Windows stderr issues
 os.environ['TQDM_DISABLE'] = '1'
-
+import json
 from typing import Optional
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from pydantic import BaseModel, field_validator, model_validator
@@ -24,6 +24,8 @@ import scipy
 from scipy.spatial.distance import cosine
 from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
+import json
+import re
 
 load_dotenv()
 
@@ -181,6 +183,274 @@ def find_relevant_chunks(question: str, chunks: list[str], top_k: int = 3) -> li
     
     # Return top K chunks (or all if fewer than K)
     return [chunk for _, chunk in scored_chunks[:top_k]]
+
+class QuizRequest(BaseModel):
+    num_questions: int
+    difficulty: str
+    document_name: Optional[str] = None
+    use_all_documents: Optional[bool] = False
+    
+    @field_validator("num_questions")
+    @classmethod
+    def validate_num_questions(cls, v: int) -> int:
+        if not (5 <= v <= 40):
+            raise ValueError("You can't have less than 5 or more than 40 questions in your quiz.")
+        return v
+
+    @field_validator("difficulty")
+    @classmethod
+    def validate_difficulty(cls, v: str) -> str:
+        difficulties = ["easy", "medium", "hard"]
+        if v not in difficulties:
+            raise ValueError(f"Difficulty must be one of: {', '.join(difficulties)}")
+        return v
+    
+    @model_validator(mode='after')
+    def validate_document_options(self):
+        if self.document_name and self.use_all_documents:
+            raise ValueError("Cannot specify both document_name and use_all_documents. Use one or the other.")
+        return self
+
+@app.post("/generate-quiz")
+async def generate_quiz(request: QuizRequest):
+
+    if request.use_all_documents:
+        all_chunks, all_embeddings, all_sources = collect_all_document_data()
+        if not all_chunks:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "NoChunks",
+                    "message": "No document chunks found. Documents may be empty.",
+                }
+            )
+        # For all documents, use general quiz embedding
+        quiz_embedding = generate_embedding("key concepts for quiz on all documents")
+    else:
+        if not request.document_name:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "MissingDocumentName",
+                    "message": "document_name is required when use_all_documents is False.",
+                }
+            )
+        # Validate document exists
+        if request.document_name not in uploaded_documents:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "DocumentNotFound",
+                    "message": f"Document '{request.document_name}' not found.",
+                    "available": list(uploaded_documents.keys())
+                }
+            )
+        all_chunks = get_document_chunks(request.document_name)
+        all_embeddings = get_document_embeddings(request.document_name)
+        if not all_chunks:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "NoChunksOrEmbeddings",
+                    "message": f"Document '{request.document_name}' has no chunks or embeddings.",
+                }
+            )
+        # For single document, use document-specific embedding
+        quiz_embedding = generate_embedding(f"key concepts for quiz on {request.document_name}")
+    
+    # Dynamic top_k based on number of questions (more questions = more context needed)
+    # Use at least 5 chunks, up to 15 for larger quizzes
+    top_k = min(max(request.num_questions, 5), 15)
+    
+    # Use semantic search if embeddings available, otherwise use first chunks
+    if len(all_embeddings) > 0:
+        relevant_chunks = find_relevant_chunks_semantic(quiz_embedding, all_embeddings, all_chunks, top_k=top_k)
+    else:
+        relevant_chunks = all_chunks[:top_k]  # Fallback to first chunks
+    
+    # Final fallback if still empty
+    if not relevant_chunks: 
+        relevant_chunks = all_chunks[:top_k]
+
+    combined_text = "\n\n---\n\n".join(relevant_chunks)
+    
+    # Difficulty guidelines
+    difficulty_guidelines = {
+        "easy": "Questions should test basic recall of facts directly stated in the text. Focus on who, what, when, where questions.",
+        "medium": "Questions should require understanding and application of concepts. Students must connect ideas and apply knowledge.",
+        "hard": "Questions should require analysis, synthesis, and deep understanding. Students must evaluate, compare, and draw conclusions."
+    }
+    
+    prompt = f"""You are creating a {request.difficulty} difficulty quiz.
+
+Content to quiz on:
+{combined_text}
+
+Create {request.num_questions} questions.
+
+{difficulty_guidelines[request.difficulty]}
+
+IMPORTANT: The quiz must include BOTH question formats (approximately 50% each):
+
+1. MULTIPLE CHOICE QUESTIONS:
+   - Each question must have exactly 4 options (A, B, C, D)
+   - Only one option is correct
+   - Include clear explanations
+
+2. SHORT ANSWER QUESTIONS:
+   - Require students to type their answer
+   - Provide the expected answer and key points
+   - Include acceptable variations or alternative phrasings
+
+Mix the question types throughout the quiz. Ensure questions test different aspects:
+- Factual recall
+- Conceptual understanding
+- Application of concepts
+- Analysis and synthesis
+
+CRITICAL: Return ONLY valid JSON with this EXACT structure:
+{{
+  "questions": [
+    {{
+      "type": "multiple_choice",
+      "question": "Question text here?",
+      "options": {{
+        "A": "First option",
+        "B": "Second option",
+        "C": "Third option",
+        "D": "Fourth option"
+      }},
+      "correct": "B",
+      "explanation": "Brief explanation of why B is correct"
+    }},
+    {{
+      "type": "short_answer",
+      "question": "Question text here?",
+      "correct_answer": "The expected answer or key points",
+      "explanation": "Brief explanation or additional context",
+      "acceptable_variations": ["Alternative phrasing 1", "Alternative phrasing 2"]
+    }}
+  ]
+}}
+
+Rules:
+1. All questions must be answerable from the provided content
+2. Mix multiple choice and short answer questions (approximately 50/50)
+3. Multiple choice questions must have exactly 4 options (A, B, C, D)
+4. Only one option is correct for multiple choice questions
+5. Include clear explanations for all questions
+6. Return ONLY the JSON, no other text
+
+DO NOT include markdown code fences or any other formatting.
+Return raw JSON only."""
+    
+    try:
+        response = client.messages.create(
+            model="claude-3-5-haiku-20241022",
+            max_tokens=4096,
+            messages=[{"role": "user", "content": prompt}]
+        )
+    except Exception as e:
+        logger.error(f"Error calling Claude API for quiz generation: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "QuizGenerationFailed",
+                "message": "Failed to generate quiz. Please try again.",
+                "detail": str(e)
+            }
+        )
+    
+    raw_response_text = response.content[0].text
+    
+    # Extract JSON from response (handle markdown code fences)
+    if raw_response_text.startswith("```json"):
+        raw_response_text = raw_response_text[len("```json"):].strip()
+    elif raw_response_text.startswith("```"):
+        raw_response_text = raw_response_text[len("```"):].strip()
+    
+    if raw_response_text.endswith("```"):
+        raw_response_text = raw_response_text[:-len("```")].strip()
+    
+    # Try to extract JSON using regex if there's extra text
+    json_match = re.search(r'\{.*\}', raw_response_text, re.DOTALL)
+    if json_match:
+        json_str = json_match.group(0)
+    else:
+        json_str = raw_response_text
+    
+    # Parse JSON
+    try:
+        quiz_data = json.loads(json_str)
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse quiz JSON: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "JSONParseError",
+                "message": "Failed to parse quiz response as JSON",
+                "detail": str(e)
+            }
+        )
+    
+    # Validate quiz data structure
+    if "questions" not in quiz_data:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "InvalidQuizFormat",
+                "message": "Quiz data is not in the expected format.",
+                "detail": "Expected 'questions' key in the quiz data."
+            }
+        )
+    
+    if not isinstance(quiz_data["questions"], list):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "InvalidQuizFormat",
+                "message": "Quiz data is not in the expected format.",
+                "detail": "Expected 'questions' to be a list."
+            }
+        )
+    
+    # Validate each question has required fields
+    for i, q in enumerate(quiz_data["questions"]):
+        if q.get("type") == "multiple_choice":
+            required_fields = ["question", "options", "correct", "explanation"]
+        elif q.get("type") == "short_answer":
+            required_fields = ["question", "correct_answer", "explanation"]
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "InvalidQuizFormat",
+                    "message": f"Question {i+1} has invalid type. Must be 'multiple_choice' or 'short_answer'."
+                }
+            )
+        
+        for field in required_fields:
+            if field not in q:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "InvalidQuizFormat",
+                        "message": f"Question {i+1} is missing required field: '{field}'."
+                    }
+                )
+    
+    # Determine document name for response
+    document_name = request.document_name if request.document_name else "all_documents"
+    
+    # Return formatted response
+    return {
+        "success": True,
+        "document": document_name,
+        "difficulty": request.difficulty,
+        "num_questions_requested": request.num_questions,
+        "num_questions_generated": len(quiz_data["questions"]),
+        "questions": quiz_data["questions"]
+    }
 
 class ChatRequest(BaseModel):
     message: str
@@ -342,19 +612,11 @@ If not in document, say so."""
                 if not relevant_chunks:
                     relevant_chunks = all_chunks[:10]  # Limit to first 10 chunks if no matches
                 
-                # Get sources for the relevant chunks by finding their indices
-                chunk_to_index = {}
-                for i, chunk in enumerate(all_chunks):
-                    if chunk not in chunk_to_index:
-                        chunk_to_index[chunk] = i
                 
-                relevant_sources = []
-                for chunk in relevant_chunks:
-                    idx = chunk_to_index.get(chunk, -1)
-                    if idx >= 0 and idx < len(all_sources):
-                        relevant_sources.append(all_sources[idx])
-                    else:
-                        relevant_sources.append("unknown")
+            chunk_to_source = dict(zip(all_chunks, all_sources))
+
+            # Lookup
+            relevant_sources = [chunk_to_source.get(chunk, "unknown") for chunk in relevant_chunks]
             
             # Edge case: Ensure we have sources for all chunks
             if len(relevant_sources) != len(relevant_chunks):
@@ -481,6 +743,80 @@ If not in documents, say so."""
             detail={
                 "error": "InternalError",
                 "message": "An unexpected error occurred.",
+                "detail": str(e)
+            }
+        )
+
+@app.post("/summarize/{filename}")
+async def summarize_document(filename: str):
+    if filename not in uploaded_documents:
+        raise HTTPException(status_code = 404, detail = {"error": "DocumentNotFound", "message": f"Document {filename} not found", "available": list(uploaded_documents.keys())})
+    doc = uploaded_documents[filename]
+    if isinstance(doc, dict):
+        text = doc["full_text"]
+    else:
+        text = doc
+    chunks = chunk_text(text, CHUNK_SIZE, CHUNK_OVERLAP)
+    if not text or len(text.strip()) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "EmptyDocument",
+                "message": f"Document '{filename}' is empty."
+            }
+        )
+    MAX_TEXT_LENGTH = 50000  # ~12,500 tokens
+    if len(text) > MAX_TEXT_LENGTH:
+        text_to_summarize = text[:MAX_TEXT_LENGTH] + "\n\n[Document truncated due to length]"
+        logger.warning(f"Document {filename} truncated from {len(text)} to {MAX_TEXT_LENGTH} chars")
+    else:
+        text_to_summarize = text
+    prompt = f"""Please analyze this document and provide a comprehensive summary.
+    Document content:
+    {text_to_summarize}
+
+    Provide your summary in this format:
+
+    **Main Topic:**
+    [One sentence describing what this document is about]
+
+    **Key Points:**
+    - [First key concept or finding]
+    - [Second key concept or finding]
+    - [Third key concept or finding]
+    - [Continue with other important points]
+
+    **Important Details:**
+    - [Significant details, definitions, or examples]
+    - [Continue as needed]
+
+    Keep it concise but comprehensive. Focus on the most important information a student would need to know."""
+    try:
+        # Step 6: Call Claude API
+        response = client.messages.create(
+            model="claude-3-5-haiku-20241022",
+            max_tokens=2000,
+            messages=[{"role": "user", "content": prompt.strip()}]
+        )
+        
+        summary = response.content[0].text
+        
+        # Step 7: Return the summary
+        return {
+            "filename": filename,
+            "summary": summary,
+            "original_length": len(text),
+            "summarized_length": len(summary),
+            "compression_ratio": f"{len(summary) / len(text) * 100:.1f}%"
+        }
+        
+    except Exception as e:
+        logger.error(f"Summarization error for {filename}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "SummarizationFailed",
+                "message": "Failed to generate summary.",
                 "detail": str(e)
             }
         )
